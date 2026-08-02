@@ -6,7 +6,10 @@ window.SB = window.SB || {};
   'use strict';
 
   var STORAGE_KEY = 'ai-spec-builder:doc:v1';
+  var BACKUP_KEY = 'ai-spec-builder:doc:v1:backup';
   var THEME_KEY = 'ai-spec-builder:theme';
+
+  SB.STORAGE_KEY = STORAGE_KEY;
 
   SB.uid = function (prefix) {
     return (prefix || 'id') + '-' + Math.random().toString(36).slice(2, 9);
@@ -91,14 +94,23 @@ window.SB = window.SB || {};
         deliverForm: '',
         askWhen: '',
         language: '日本語'
+      },
+      options: {
+        roleHeader: true,   // AIへの役割・進め方の指示を先頭に付ける
+        coords: true,       // 座標一覧を付ける
+        gaps: true,         // 指定していないことをまとめる
+        questions: true     // 実装前に確認してほしいことを付ける
       }
     };
   };
 
   /* ---------- 新規テンプレート ---------- */
 
+  SB.MIN_NODE = 8;      // 部品の最小辺
+  SB.MAX_CANVAS = 8000; // 画面と部品の最大辺（暴走した値でブラウザを固めないため）
+
   SB.newFeature = function () {
-    return { id: SB.uid('f'), name: '', priority: '必須', description: '', acceptance: [], notes: '' };
+    return { id: SB.uid('f'), name: '', priority: '必須', description: '', acceptance: [], notes: '', screens: [] };
   };
 
   SB.newScreen = function (name) {
@@ -142,27 +154,137 @@ window.SB = window.SB || {};
 
   SB.doc = SB.defaultDoc();
 
+  /* 読み込んだ JSON は信用しない。既定の形に合わせて作り直す。
+     項目が欠けていても、型が違っても、余計なものが混ざっていても壊れないようにする。 */
+
+  function isObj(v) { return v !== null && typeof v === 'object' && !Array.isArray(v); }
+
+  function asText(v) {
+    if (v === null || v === undefined) return '';
+    if (typeof v === 'object') return '';
+    return String(v);
+  }
+
+  function asStrArray(v) {
+    if (Array.isArray(v)) {
+      return v.filter(function (x) { return x !== null && x !== undefined && typeof x !== 'object'; })
+              .map(String);
+    }
+    if (typeof v === 'string' && v !== '') return v.split('\n');
+    return [];
+  }
+
+  function asNum(v, def, min, max) {
+    var n = typeof v === 'number' ? v : parseFloat(v);
+    if (isNaN(n) || !isFinite(n)) return def;
+    if (min !== undefined) n = Math.max(min, n);
+    if (max !== undefined) n = Math.min(max, n);
+    return n;
+  }
+
+  function asList(v, limit) {
+    if (!Array.isArray(v)) return [];
+    return v.slice(0, limit || 500);
+  }
+
+  // テンプレートの形に src を流し込む（文字列/配列/真偽/数値を型ごとに補正）
+  function shape(tpl, src) {
+    var out = SB.clone(tpl);
+    if (!isObj(src)) return out;
+    Object.keys(out).forEach(function (k) {
+      var v = src[k];
+      if (v === undefined || v === null) return;
+      if (Array.isArray(out[k])) out[k] = asStrArray(v);
+      else if (typeof out[k] === 'boolean') out[k] = v === true || v === 'true' || v === 1;
+      else if (typeof out[k] === 'number') out[k] = asNum(v, out[k]);
+      else out[k] = asText(v);
+    });
+    if (typeof src.id === 'string' && src.id) out.id = src.id;
+    return out;
+  }
+
   function migrate(doc) {
     var base = SB.defaultDoc();
-    // 既定オブジェクトに読み込み値を重ねて、項目追加があっても壊れないようにする
-    Object.keys(base).forEach(function (k) {
-      if (doc[k] === undefined || doc[k] === null) return;
-      if (Array.isArray(base[k])) {
-        base[k] = Array.isArray(doc[k]) ? doc[k] : base[k];
-      } else if (typeof base[k] === 'object') {
-        Object.keys(base[k]).forEach(function (sub) {
-          if (doc[k][sub] !== undefined && doc[k][sub] !== null) base[k][sub] = doc[k][sub];
-        });
-      } else {
-        base[k] = doc[k];
-      }
+    if (!isObj(doc)) return base;
+
+    base.basic = shape(base.basic, doc.basic);
+    base.purpose = shape(base.purpose, doc.purpose);
+    base.stack = shape(base.stack, doc.stack);
+    base.quality = shape(base.quality, doc.quality);
+    base.rules = shape(base.rules, doc.rules);
+    base.options = shape(base.options, doc.options);
+
+    base.api = shape({ style: '', auth: '', external: '' }, doc.api);
+    base.api.endpoints = asList(isObj(doc.api) ? doc.api.endpoints : null)
+      .map(function (x) { return shape(SB.newEndpoint(), x); });
+
+    base.features = asList(doc.features).map(function (x) {
+      var f = shape(SB.newFeature(), x);
+      if (['必須', '推奨', '任意', '将来対応'].indexOf(f.priority) < 0) f.priority = '必須';
+      f.screens = asStrArray(isObj(x) ? x.screens : null);
+      return f;
     });
-    (base.screens || []).forEach(function (sc) {
-      sc.nodes = sc.nodes || [];
-      sc.nodes.forEach(function (n) { n.props = n.props || {}; });
+
+    base.data = asList(doc.data).map(function (x) {
+      var e = shape({ id: SB.uid('e'), name: '', description: '' }, x);
+      e.fields = asList(isObj(x) ? x.fields : null).map(function (y) {
+        var fl = shape(SB.newField(), y);
+        if (SB.FIELD_TYPES.indexOf(fl.type) < 0) fl.type = 'text';
+        return fl;
+      });
+      return e;
     });
+
+    base.flows = asList(doc.flows).map(function (x) {
+      return shape(SB.newFlow(), x);
+    });
+
+    base.screens = asList(doc.screens, 200).map(function (x) {
+      var sc = shape({ id: SB.uid('s'), name: '', device: 'desktop', route: '', description: '' }, x);
+      if (!sc.name) sc.name = '無題の画面';
+      var dev = SB.DEVICES.filter(function (d) { return d.value === sc.device; })[0];
+      if (!dev) { sc.device = 'desktop'; dev = SB.DEVICES[0]; }
+      sc.width = asNum(isObj(x) ? x.width : null, dev.width, 200, SB.MAX_CANVAS);
+      sc.height = asNum(isObj(x) ? x.height : null, dev.height, 200, SB.MAX_CANVAS);
+      sc.nodes = asList(isObj(x) ? x.nodes : null, 2000).map(function (n) {
+        if (!isObj(n)) return null;
+        var type = asText(n.type);
+        if (!SB.shapes || !SB.shapes[type]) return null;
+        var def = SB.shapes[type];
+        var node = {
+          id: asText(n.id) || SB.uid('n'),
+          type: type,
+          x: asNum(n.x, 0, 0, SB.MAX_CANVAS),
+          y: asNum(n.y, 0, 0, SB.MAX_CANVAS),
+          w: asNum(n.w, def.w, SB.MIN_NODE, SB.MAX_CANVAS),
+          h: asNum(n.h, def.h, SB.MIN_NODE, SB.MAX_CANVAS),
+          label: asText(n.label),
+          note: asText(n.note),
+          link: asText(n.link),
+          props: {}
+        };
+        if (isObj(n.props)) {
+          Object.keys(n.props).forEach(function (k) {
+            var v = n.props[k];
+            if (v === null || v === undefined) return;
+            node.props[k] = typeof v === 'object' ? '' : v;
+          });
+        }
+        return node;
+      }).filter(Boolean);
+      return sc;
+    });
+
     return base;
   }
+
+  // 読み込もうとしている JSON がこのアプリのものらしいか
+  SB.looksLikeDoc = function (obj) {
+    if (!isObj(obj)) return false;
+    return ['basic', 'features', 'screens', 'purpose', 'stack', 'rules'].some(function (k) {
+      return obj[k] !== undefined;
+    });
+  };
 
   SB.load = function () {
     try {
@@ -176,29 +298,92 @@ window.SB = window.SB || {};
   };
 
   var saveTimer = null;
+  SB.saveFailed = false;
+  SB.dirty = false;
+
   SB.save = function (immediate) {
+    SB.dirty = true;
     clearTimeout(saveTimer);
+    saveTimer = null;
     var run = function () {
-      SB.doc.updatedAt = new Date().toISOString();
+      saveTimer = null;
+      var stamp = new Date().toISOString();
       try {
         localStorage.setItem(STORAGE_KEY, JSON.stringify(SB.doc));
-        if (SB.onSaved) SB.onSaved(SB.doc.updatedAt);
+        SB.doc.updatedAt = stamp;
+        SB.dirty = false;
+        SB.saveFailed = false;
+        if (SB.onSaved) SB.onSaved(stamp);
       } catch (e) {
-        if (SB.onSaveError) SB.onSaveError(e);
+        var first = !SB.saveFailed;
+        SB.saveFailed = true;
+        if (SB.onSaveError) SB.onSaveError(e, first);
       }
     };
     if (immediate) run(); else saveTimer = setTimeout(run, 400);
   };
 
+  // 保存待ちがあるときだけ書き出す。
+  // 無条件に保存すると、別タブで進めた内容を古い内容で踏み潰してしまう。
+  SB.flush = function () {
+    if (saveTimer === null && !SB.dirty) return;
+    SB.save(true);
+  };
+
+  /* 元に戻せない操作の直前に、1世代だけ退避しておく */
+  SB.backup = function () {
+    try {
+      var raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) localStorage.setItem(BACKUP_KEY, raw);
+      return !!raw;
+    } catch (e) { return false; }
+  };
+
+  SB.hasBackup = function () {
+    try { return !!localStorage.getItem(BACKUP_KEY); } catch (e) { return false; }
+  };
+
+  SB.restoreBackup = function () {
+    try {
+      var raw = localStorage.getItem(BACKUP_KEY);
+      if (!raw) return false;
+      SB.doc = migrate(JSON.parse(raw));
+      localStorage.removeItem(BACKUP_KEY);
+      fireDocReplaced();
+      SB.save(true);
+      return true;
+    } catch (e) { return false; }
+  };
+
+  // ドキュメントが丸ごと入れ替わったことを各画面に知らせる（編集履歴などを捨てるため）
+  SB.docReplacedHandlers = [];
+  SB.onDocReplaced = function (fn) { SB.docReplacedHandlers.push(fn); };
+  function fireDocReplaced() {
+    SB.docReplacedHandlers.forEach(function (fn) { try { fn(); } catch (e) {} });
+  }
+
   SB.reset = function () {
+    SB.backup();
     SB.doc = SB.defaultDoc();
+    fireDocReplaced();
     SB.save(true);
   };
 
   SB.replaceDoc = function (obj) {
+    SB.backup();
     SB.doc = migrate(obj || {});
+    fireDocReplaced();
     SB.save(true);
   };
+
+  // localStorage が使えるか（プライベートブラウジング等の判定）
+  SB.storageAvailable = (function () {
+    try {
+      localStorage.setItem('__t', '1');
+      localStorage.removeItem('__t');
+      return true;
+    } catch (e) { return false; }
+  })();
 
   /* ---------- テーマ ---------- */
 

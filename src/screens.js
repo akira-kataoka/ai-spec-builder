@@ -19,12 +19,19 @@ window.SB = window.SB || {};
   var undoStacks = {};  // screenId -> { past: [], future: [] }
   var drag = null;      // ドラッグ中の状態
   var mounted = false;
+  var clipboard = null; // コピーした部品
+  var DRAG_SLOP = 3;    // これ以下の動きは「クリック」とみなす
 
   /* ---------- 便利関数 ---------- */
 
   function screens() { return SB.doc.screens; }
   function scr() { return screens()[current]; }
   function snap(v) { return snapOn ? Math.round(v / GRID) * GRID : Math.round(v); }
+
+  // 画面の外へ出しすぎない（端に少しはみ出す程度は許す）
+  function clampPos(v, size, limit) {
+    return Math.max(0, Math.min(v, Math.max(0, limit - Math.min(size, 24))));
+  }
   function nodeById(id) {
     var s = scr(); if (!s) return null;
     for (var i = 0; i < s.nodes.length; i++) if (s.nodes[i].id === id) return s.nodes[i];
@@ -45,30 +52,69 @@ window.SB = window.SB || {};
     if (!undoStacks[s.id]) undoStacks[s.id] = { past: [], future: [] };
     return undoStacks[s.id];
   }
+
+  // 画面サイズも履歴に含める（部品だけ戻して枠が戻らない、を防ぐ）
+  function snapshot() {
+    var s = scr();
+    return JSON.stringify({ nodes: s.nodes, width: s.width, height: s.height, device: s.device });
+  }
+
+  function restore(str) {
+    var s = scr();
+    var o;
+    try { o = JSON.parse(str); } catch (e) { return; }
+    if (Array.isArray(o)) { s.nodes = o; return; }
+    s.nodes = Array.isArray(o.nodes) ? o.nodes : [];
+    if (o.width) s.width = o.width;
+    if (o.height) s.height = o.height;
+    if (o.device) s.device = o.device;
+  }
+
   function pushUndo() {
-    var s = scr(); if (!s) return;
+    var s = scr(); if (!s) return null;
     var st = stack();
-    st.past.push(JSON.stringify(s.nodes));
+    var snap = snapshot();
+    if (st.past[st.past.length - 1] === snap) return snap; // 変化なしは積まない
+    st.past.push(snap);
     if (st.past.length > 60) st.past.shift();
     st.future.length = 0;
+    return snap;
   }
+
+  // 直前の pushUndo を取り消す（結局なにも変わらなかったとき）
+  function dropUndo(expected) {
+    var st = stack();
+    if (st.past.length && (expected === undefined || st.past[st.past.length - 1] === expected)) st.past.pop();
+  }
+
   function undo() {
     var s = scr(); if (!s) return;
     var st = stack();
-    if (!st.past.length) return;
-    st.future.push(JSON.stringify(s.nodes));
-    s.nodes = JSON.parse(st.past.pop());
+    if (!st.past.length) { SB.toast('これ以上戻せません'); return; }
+    st.future.push(snapshot());
+    restore(st.past.pop());
     selection = [];
     commit();
   }
+
   function redo() {
     var s = scr(); if (!s) return;
     var st = stack();
     if (!st.future.length) return;
-    st.past.push(JSON.stringify(s.nodes));
-    s.nodes = JSON.parse(st.future.pop());
+    st.past.push(snapshot());
+    restore(st.future.pop());
     selection = [];
     commit();
+  }
+
+  // ドキュメントが差し替わったら履歴は無効
+  if (SB.onDocReplaced) {
+    SB.onDocReplaced(function () {
+      undoStacks = {};
+      current = 0;
+      selection = [];
+      clipboard = null;
+    });
   }
 
   function commit() {
@@ -80,20 +126,33 @@ window.SB = window.SB || {};
 
   /* ---------- ノード操作 ---------- */
 
+  // 同じ場所に重ねて置かないよう、空いている位置を探す
+  function freeSpot(s, x, y, w, hgt) {
+    for (var i = 0; i < 40; i++) {
+      var taken = s.nodes.some(function (n) { return Math.abs(n.x - x) < 8 && Math.abs(n.y - y) < 8; });
+      if (!taken) break;
+      x = snap(x + 24); y = snap(y + 24);
+      if (x + w > s.width || y + hgt > s.height) { x = snap(16 + i * 8); y = snap(16 + i * 8); }
+    }
+    return { x: clampPos(x, w, s.width), y: clampPos(y, hgt, s.height) };
+  }
+
   function addNode(type, cx, cy) {
     var def = shapeDef(type);
     if (!def) return;
     var s = scr(); if (!s) return;
     pushUndo();
+    var placed = cx !== undefined;
+    var x = snap((placed ? cx : s.width / 2) - def.w / 2);
+    var y = snap((placed ? cy : 96) - def.h / 2);
+    if (!placed) { var p = freeSpot(s, x, y, def.w, def.h); x = p.x; y = p.y; }
     var n = {
       id: SB.uid('n'), type: type,
-      x: snap((cx === undefined ? s.width / 2 : cx) - def.w / 2),
-      y: snap((cy === undefined ? 120 : cy) - def.h / 2),
+      x: clampPos(x, def.w, s.width),
+      y: clampPos(y, def.h, s.height),
       w: def.w, h: def.h,
       label: '', note: '', link: '', props: {}
     };
-    n.x = Math.max(0, Math.min(n.x, s.width - 16));
-    n.y = Math.max(0, Math.min(n.y, s.height - 16));
     s.nodes.push(n);
     selection = [n.id];
     commit();
@@ -113,7 +172,32 @@ window.SB = window.SB || {};
     var copies = selectedNodes().map(function (n) {
       var c = SB.clone(n);
       c.id = SB.uid('n');
-      c.x = snap(n.x + 16); c.y = snap(n.y + 16);
+      c.x = clampPos(snap(n.x + 16), n.w, s.width);
+      c.y = clampPos(snap(n.y + 16), n.h, s.height);
+      return c;
+    });
+    s.nodes = s.nodes.concat(copies);
+    selection = copies.map(function (c) { return c.id; });
+    commit();
+  }
+
+  function copySelected() {
+    var ns = selectedNodes();
+    if (!ns.length) return;
+    clipboard = SB.clone(ns);
+    SB.toast(ns.length + '個の部品をコピーしました');
+  }
+
+  function pasteClipboard() {
+    var s = scr();
+    if (!s || !clipboard || !clipboard.length) return;
+    pushUndo();
+    var copies = clipboard.map(function (n) {
+      var c = SB.clone(n);
+      c.id = SB.uid('n');
+      c.x = clampPos(snap(n.x + 16), n.w, s.width);
+      c.y = clampPos(snap(n.y + 16), n.h, s.height);
+      c.link = '';   // 別画面に貼ったときに壊れた遷移が残らないように
       return c;
     });
     s.nodes = s.nodes.concat(copies);
@@ -149,9 +233,48 @@ window.SB = window.SB || {};
     commit();
   }
 
+  // 等間隔に並べる
+  function distributeSelected(axis) {
+    var ns = selectedNodes();
+    if (ns.length < 3) { SB.toast('3個以上を選択してください'); return; }
+    pushUndo();
+    var horiz = axis === 'x';
+    ns.sort(function (a, b) { return horiz ? a.x - b.x : a.y - b.y; });
+    var first = ns[0], last = ns[ns.length - 1];
+    var span = horiz
+      ? (last.x + last.w) - first.x
+      : (last.y + last.h) - first.y;
+    var used = ns.reduce(function (a, n) { return a + (horiz ? n.w : n.h); }, 0);
+    var gap = (span - used) / (ns.length - 1);
+    var pos = horiz ? first.x : first.y;
+    ns.forEach(function (n) {
+      if (horiz) { n.x = Math.round(pos); pos += n.w + gap; }
+      else { n.y = Math.round(pos); pos += n.h + gap; }
+    });
+    commit();
+  }
+
   /* ---------- SVG 生成 ---------- */
 
+  // SVG 文字列に埋める数値は必ずここを通す。
+  // 読み込んだ JSON の座標が文字列だった場合に属性を抜け出されるのを防ぐ（多層防御）。
+  function num(v, def) {
+    var x = typeof v === 'number' ? v : parseFloat(v);
+    if (isNaN(x) || !isFinite(x)) return def || 0;
+    return Math.max(-SB.MAX_CANVAS, Math.min(SB.MAX_CANVAS, x));
+  }
+
+  function safeNode(n) {
+    var def = shapeDef(n.type);
+    n.x = num(n.x, 0);
+    n.y = num(n.y, 0);
+    n.w = Math.max(SB.MIN_NODE, num(n.w, def ? def.w : 80));
+    n.h = Math.max(SB.MIN_NODE, num(n.h, def ? def.h : 40));
+    return n;
+  }
+
   function drawNode(n) {
+    safeNode(n);
     var def = shapeDef(n.type);
     var inner;
     if (def && typeof def.draw === 'function') {
@@ -180,10 +303,12 @@ window.SB = window.SB || {};
 
   /* 画面全体の SVG（エクスポート用・選択表示なし） */
   SB.screenToSvg = function (s) {
+    var w = Math.max(1, num(s.width, 960));
+    var hgt = Math.max(1, num(s.height, 640));
     var body = (s.nodes || []).map(drawNode).join('');
     body = body.replace(/<rect class="node-hit"[^>]*><\/rect>/g, '');
-    return '<svg xmlns="' + NS + '" width="' + s.width + '" height="' + s.height + '" viewBox="0 0 ' + s.width + ' ' + s.height + '">' +
-      '<rect width="' + s.width + '" height="' + s.height + '" fill="#ffffff"></rect>' +
+    return '<svg xmlns="' + NS + '" width="' + w + '" height="' + hgt + '" viewBox="0 0 ' + w + ' ' + hgt + '">' +
+      '<rect width="' + w + '" height="' + hgt + '" fill="#ffffff"></rect>' +
       body + '</svg>';
   };
 
@@ -195,10 +320,12 @@ window.SB = window.SB || {};
     ui.svg.setAttribute('width', s.width);
     ui.svg.setAttribute('height', s.height);
     ui.svg.setAttribute('viewBox', '0 0 ' + s.width + ' ' + s.height);
+    // 拡大しても左端が見切れないよう、拡大分の余白をレイアウトに戻す
     ui.wrap.style.transform = 'scale(' + zoom + ')';
     ui.wrap.style.width = s.width + 'px';
     ui.wrap.style.height = s.height + 'px';
     ui.wrap.style.marginBottom = (s.height * (zoom - 1)) + 'px';
+    ui.wrap.style.marginRight = (s.width * (zoom - 1)) + 'px';
 
     var parts = [];
 
@@ -265,12 +392,15 @@ window.SB = window.SB || {};
     var handle = e.target.getAttribute && e.target.getAttribute('data-handle');
     var hitId = e.target.getAttribute && e.target.getAttribute('data-id');
 
-    ui.svg.setPointerCapture(e.pointerId);
+    // 環境によっては失敗するが、失敗しても操作は続行できる
+    try { ui.svg.setPointerCapture(e.pointerId); } catch (err) {}
 
     if (handle && selection.length === 1) {
       var n = nodeById(selection[0]);
-      pushUndo();
-      drag = { mode: 'resize', dir: handle, start: p, orig: { x: n.x, y: n.y, w: n.w, h: n.h }, node: n, moved: false };
+      drag = {
+        mode: 'resize', dir: handle, start: p, pointerId: e.pointerId,
+        orig: { x: n.x, y: n.y, w: n.w, h: n.h }, node: n, moved: false, snap: null
+      };
       return;
     }
 
@@ -281,9 +411,8 @@ window.SB = window.SB || {};
       } else if (selection.indexOf(hitId) < 0) {
         selection = [hitId];
       }
-      pushUndo();
       drag = {
-        mode: 'move', start: p, moved: false,
+        mode: 'move', start: p, moved: false, pointerId: e.pointerId, snap: null,
         origs: selectedNodes().map(function (n) { return { n: n, x: n.x, y: n.y }; })
       };
       renderCanvas();
@@ -292,36 +421,55 @@ window.SB = window.SB || {};
     }
 
     if (!e.shiftKey) selection = [];
-    drag = { mode: 'marquee', start: p, rect: null, add: e.shiftKey, base: selection.slice() };
+    drag = { mode: 'marquee', start: p, rect: null, add: e.shiftKey, base: selection.slice(), pointerId: e.pointerId };
     renderCanvas();
     renderInspector();
   }
 
   function onPointerMove(e) {
     if (!drag) return;
+    if (drag.pointerId !== undefined && e.pointerId !== undefined && e.pointerId !== drag.pointerId) return;
     var s = scr(); if (!s) return;
     var p = toCanvas(e);
     var dx = p.x - drag.start.x, dy = p.y - drag.start.y;
 
     if (drag.mode === 'move') {
-      if (Math.abs(dx) > 1 || Math.abs(dy) > 1) drag.moved = true;
+      // 指が数px揺れただけでは動かさない（クリックのつもりで座標がずれるのを防ぐ）
+      if (!drag.moved) {
+        if (Math.abs(dx) < DRAG_SLOP && Math.abs(dy) < DRAG_SLOP) return;
+        drag.moved = true;
+        drag.snap = pushUndo();
+      }
       drag.origs.forEach(function (o) {
-        o.n.x = Math.max(0, snap(o.x + dx));
-        o.n.y = Math.max(0, snap(o.y + dy));
+        o.n.x = clampPos(snap(o.x + dx), o.n.w, s.width);
+        o.n.y = clampPos(snap(o.y + dy), o.n.h, s.height);
       });
       renderCanvas();
       return;
     }
 
     if (drag.mode === 'resize') {
+      if (!drag.moved) {
+        if (Math.abs(dx) < DRAG_SLOP && Math.abs(dy) < DRAG_SLOP) return;
+        drag.moved = true;
+        drag.snap = pushUndo();
+      }
       var o = drag.orig, n = drag.node, d = drag.dir;
       var x = o.x, y = o.y, w = o.w, hgt = o.h;
-      if (d.indexOf('e') >= 0) w = Math.max(16, snap(o.w + dx));
-      if (d.indexOf('s') >= 0) hgt = Math.max(16, snap(o.h + dy));
-      if (d.indexOf('w') >= 0) { var nx = snap(o.x + dx); w = Math.max(16, o.x + o.w - nx); x = o.x + o.w - w; }
-      if (d.indexOf('n') >= 0) { var ny = snap(o.y + dy); hgt = Math.max(16, o.y + o.h - ny); y = o.y + o.h - hgt; }
+      var MIN = SB.MIN_NODE, MAX = SB.MAX_CANVAS;
+      if (d.indexOf('e') >= 0) w = Math.min(MAX, Math.max(MIN, snap(o.w + dx)));
+      if (d.indexOf('s') >= 0) hgt = Math.min(MAX, Math.max(MIN, snap(o.h + dy)));
+      if (d.indexOf('w') >= 0) {
+        var nx = Math.max(0, snap(o.x + dx));            // 先に0でクランプしてから幅を出す
+        w = Math.max(MIN, o.x + o.w - nx);
+        x = o.x + o.w - w;
+      }
+      if (d.indexOf('n') >= 0) {
+        var ny = Math.max(0, snap(o.y + dy));
+        hgt = Math.max(MIN, o.y + o.h - ny);
+        y = o.y + o.h - hgt;
+      }
       n.x = Math.max(0, x); n.y = Math.max(0, y); n.w = w; n.h = hgt;
-      drag.moved = true;
       renderCanvas();
       renderInspector();
       return;
@@ -343,16 +491,11 @@ window.SB = window.SB || {};
 
   function onPointerUp(e) {
     if (!drag) return;
-    var wasMarquee = drag.mode === 'marquee';
+    if (drag.pointerId !== undefined && e.pointerId !== undefined && e.pointerId !== drag.pointerId) return;
     var moved = drag.moved;
     drag = null;
     try { ui.svg.releasePointerCapture(e.pointerId); } catch (err) {}
     if (moved) SB.touch();
-    else if (!wasMarquee) {
-      // 動かさなかった場合は undo スタックを戻す
-      var st = stack();
-      if (st.past.length) st.past.pop();
-    }
     renderCanvas();
     renderInspector();
   }
@@ -361,13 +504,21 @@ window.SB = window.SB || {};
 
   function onKeyDown(e) {
     if (!mounted) return;
+    if (SB.isModalOpen && SB.isModalOpen()) return;   // 確認ダイアログの裏で操作されないように
+    if (document.body.classList.contains('nav-open')) return;
     var tag = (e.target.tagName || '').toLowerCase();
     if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+    if (e.target && e.target.isContentEditable) return;
     var meta = e.ctrlKey || e.metaKey;
 
     if (meta && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
     if (meta && e.key.toLowerCase() === 'y') { e.preventDefault(); redo(); return; }
     if (meta && e.key.toLowerCase() === 'd') { e.preventDefault(); duplicateSelected(); return; }
+    if (meta && e.key.toLowerCase() === 'c') { e.preventDefault(); copySelected(); return; }
+    if (meta && e.key.toLowerCase() === 'v') { e.preventDefault(); pasteClipboard(); return; }
+    if (meta && e.key.toLowerCase() === 'x') {
+      e.preventDefault(); copySelected(); deleteSelected(); return;
+    }
     if (meta && e.key.toLowerCase() === 'a') {
       e.preventDefault();
       var s = scr(); if (s) { selection = s.nodes.map(function (n) { return n.id; }); renderCanvas(); renderInspector(); }
@@ -385,11 +536,16 @@ window.SB = window.SB || {};
     if (dx || dy) {
       if (!selection.length) return;
       e.preventDefault();
-      pushUndo();
+      // 長押しのオートリピートで履歴が埋まらないよう、押しっぱなしの間は積まない
+      if (!e.repeat) pushUndo();
+      var s2 = scr();
       selectedNodes().forEach(function (n) {
-        n.x = Math.max(0, n.x + dx); n.y = Math.max(0, n.y + dy);
+        n.x = clampPos(n.x + dx, n.w, s2.width);
+        n.y = clampPos(n.y + dy, n.h, s2.height);
       });
-      commit();
+      SB.touch();
+      renderCanvas();
+      renderInspector();
     }
   }
 
@@ -464,10 +620,23 @@ window.SB = window.SB || {};
     SB.clear(box);
     if (!scr()) return;
 
+    // 狭い画面ではパレットとプロパティを引き出しで開く
+    var pal = SB.btn('部品', function () {
+      document.body.classList.remove('inspector-open');
+      document.body.classList.toggle('palette-open');
+    }, 'btn btn-sm mobile-only', 'plus');
+    var insp = SB.btn('設定', function () {
+      document.body.classList.remove('palette-open');
+      document.body.classList.toggle('inspector-open');
+    }, 'btn btn-sm mobile-only', 'doc');
+    box.appendChild(pal);
+    box.appendChild(insp);
+
     box.appendChild(SB.iconBtn('undo', '取り消し (Ctrl+Z)', undo));
     box.appendChild(SB.iconBtn('redo', 'やり直し (Ctrl+Shift+Z)', redo));
     box.appendChild(h('span', { class: 'sep' }));
-    box.appendChild(SB.iconBtn('dup', '複製 (Ctrl+D)', duplicateSelected));
+    box.appendChild(SB.iconBtn('copy', 'コピー (Ctrl+C)', copySelected));
+    box.appendChild(SB.iconBtn('dup', '複製 (Ctrl+D) / 貼り付けは Ctrl+V', duplicateSelected));
     box.appendChild(SB.iconBtn('trash', '削除 (Delete)', deleteSelected, 'btn-danger'));
     box.appendChild(h('span', { class: 'sep' }));
     box.appendChild(SB.iconBtn('front', '最前面へ', function () { reorder(true); }));
@@ -494,14 +663,30 @@ window.SB = window.SB || {};
   }
 
   function deleteScreen() {
-    SB.confirm('画面「' + (scr().name || '無題') + '」を削除します。よろしいですか。', function () {
+    var target = scr();
+    SB.confirm('画面「' + (target.name || '無題') + '」を、置いた部品ごと削除します。よろしいですか。', function () {
+      delete undoStacks[target.id];
       screens().splice(current, 1);
       current = Math.max(0, current - 1);
       selection = [];
       if (!screens().length) screens().push(SB.newScreen('画面1'));
       fitZoom();
       commit();
+      renderBar();
     }, '削除する');
+  }
+
+  function duplicateScreen() {
+    var src = scr(); if (!src) return;
+    var copy = SB.clone(src);
+    copy.id = SB.uid('s');
+    copy.name = (src.name || '無題') + ' のコピー';
+    copy.nodes.forEach(function (n) { n.id = SB.uid('n'); n.link = ''; });
+    screens().splice(current + 1, 0, copy);
+    current = current + 1;
+    selection = [];
+    fitZoom();
+    commit();
   }
 
   function setZoom(z) {
@@ -562,13 +747,16 @@ window.SB = window.SB || {};
     return h('div', { class: 'insp-field' }, [h('label', { text: label }), inp]);
   }
 
-  function textField(label, value, placeholder, onChange, multiline, rows) {
+  function textField(label, value, placeholder, onChange, multiline, rows, undoable) {
     var inp = multiline
       ? h('textarea', { placeholder: placeholder || '', rows: rows || 3 })
       : h('input', { type: 'text', placeholder: placeholder || '' });
     inp.value = value || '';
-    var timer = null;
+    var timer = null, pushed = false;
+    inp.addEventListener('focus', function () { pushed = false; });
     inp.addEventListener('input', function () {
+      // 入力のひとまとまりを1回の取り消しにする
+      if (undoable !== false && !pushed) { pushUndo(); pushed = true; }
       onChange(inp.value);
       renderCanvas();
       clearTimeout(timer);
@@ -582,7 +770,9 @@ window.SB = window.SB || {};
     if (p.type === 'boolean') {
       var cb = h('input', { type: 'checkbox' });
       cb.checked = !!cur;
-      cb.addEventListener('change', function () { n.props[p.key] = cb.checked; SB.touch(); renderCanvas(); });
+      cb.addEventListener('change', function () {
+        pushUndo(); n.props[p.key] = cb.checked; SB.touch(); renderCanvas();
+      });
       return h('div', { class: 'insp-field' }, [
         h('label', { class: 'check', style: 'margin:0' }, [cb, h('span', { text: p.label })])
       ]);
@@ -593,15 +783,25 @@ window.SB = window.SB || {};
         sel.appendChild(h('option', { value: o.value, text: o.label }));
       });
       sel.value = cur !== undefined && cur !== null ? cur : (p.options && p.options[0] ? p.options[0].value : '');
-      sel.addEventListener('change', function () { n.props[p.key] = sel.value; SB.touch(); renderCanvas(); });
+      sel.addEventListener('change', function () {
+        pushUndo(); n.props[p.key] = sel.value; SB.touch(); renderCanvas();
+      });
       return h('div', { class: 'insp-field' }, [h('label', { text: p.label }), sel]);
     }
     if (p.type === 'number') {
       var num = h('input', { type: 'number', min: p.min, max: p.max });
       num.value = cur !== undefined && cur !== null ? cur : '';
+      var pushedNum = false;
+      num.addEventListener('focus', function () { pushedNum = false; });
       num.addEventListener('input', function () {
+        if (!pushedNum) { pushUndo(); pushedNum = true; }
         var v = parseFloat(num.value);
-        n.props[p.key] = isNaN(v) ? undefined : v;
+        if (isNaN(v) || !isFinite(v)) v = undefined;
+        else {
+          if (p.min !== undefined) v = Math.max(p.min, v);
+          if (p.max !== undefined) v = Math.min(p.max, v);
+        }
+        n.props[p.key] = v;
         renderCanvas(); SB.touch();
       });
       return h('div', { class: 'insp-field' }, [h('label', { text: p.label }), num]);
@@ -643,14 +843,15 @@ window.SB = window.SB || {};
           return h('div', { class: 'insp-field' }, [h('label', { text: '画面サイズ' }), sel2]);
         })(),
         h('div', { class: 'insp-row' }, [
-          numField('幅', s.width, function (v) { s.width = Math.max(200, v); }),
-          numField('高さ', s.height, function (v) { s.height = Math.max(200, v); })
+          numField('幅', s.width, function (v) { s.width = Math.min(SB.MAX_CANVAS, Math.max(200, v)); }),
+          numField('高さ', s.height, function (v) { s.height = Math.min(SB.MAX_CANVAS, Math.max(200, v)); })
         ]),
         textField('この画面の説明（AIへの補足）', s.description,
           '例: ログイン後の最初の画面。件数が多いので検索とページングが要る。',
           function (v) { s.description = v; }, true, 4),
         h('div', { class: 'row-actions' }, [
-          SB.btn('この画面を削除', deleteScreen, 'btn btn-sm btn-danger', 'trash')
+          SB.btn('この画面を複製', duplicateScreen, 'btn btn-sm', 'dup'),
+          SB.btn('削除', deleteScreen, 'btn btn-sm btn-danger', 'trash')
         ])
       ]));
       box.appendChild(h('div', { class: 'insp-empty', text: '部品を選ぶと、ここでラベルや注釈を編集できます。' }));
@@ -668,8 +869,14 @@ window.SB = window.SB || {};
           SB.btn('上下中央', function () { alignSelected('centerY'); }, 'btn btn-sm'),
           SB.btn('下揃え', function () { alignSelected('bottom'); }, 'btn btn-sm')
         ]),
+        h('h4', { text: '等間隔に並べる', style: 'margin-top:12px' }),
+        h('div', { class: 'chips' }, [
+          SB.btn('横に等間隔', function () { distributeSelected('x'); }, 'btn btn-sm'),
+          SB.btn('縦に等間隔', function () { distributeSelected('y'); }, 'btn btn-sm')
+        ]),
         h('div', { class: 'row-actions' }, [
           SB.btn('複製', duplicateSelected, 'btn btn-sm', 'dup'),
+          SB.btn('コピー', copySelected, 'btn btn-sm', 'copy'),
           SB.btn('削除', deleteSelected, 'btn btn-sm btn-danger', 'trash')
         ])
       ]));
@@ -716,12 +923,12 @@ window.SB = window.SB || {};
     box.appendChild(h('div', { class: 'insp-group' }, [
       h('h4', { text: '位置とサイズ' }),
       h('div', { class: 'insp-row' }, [
-        numField('X', n.x, function (v) { n.x = Math.max(0, v); }),
-        numField('Y', n.y, function (v) { n.y = Math.max(0, v); })
+        numField('X', n.x, function (v) { n.x = Math.min(SB.MAX_CANVAS, Math.max(0, v)); }),
+        numField('Y', n.y, function (v) { n.y = Math.min(SB.MAX_CANVAS, Math.max(0, v)); })
       ]),
       h('div', { class: 'insp-row' }, [
-        numField('幅', n.w, function (v) { n.w = Math.max(16, v); }),
-        numField('高さ', n.h, function (v) { n.h = Math.max(16, v); })
+        numField('幅', n.w, function (v) { n.w = Math.min(SB.MAX_CANVAS, Math.max(SB.MIN_NODE, v)); }),
+        numField('高さ', n.h, function (v) { n.h = Math.min(SB.MAX_CANVAS, Math.max(SB.MIN_NODE, v)); })
       ])
     ]));
 
@@ -771,6 +978,18 @@ window.SB = window.SB || {};
     svg.addEventListener('pointerup', onPointerUp);
     svg.addEventListener('pointercancel', onPointerUp);
     svg.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+
+    // ダブルクリックでラベル入力へ飛ぶ（右パネルを探さなくてよいように）
+    svg.addEventListener('dblclick', function (e) {
+      var id = e.target.getAttribute && e.target.getAttribute('data-id');
+      if (!id) return;
+      selection = [id];
+      renderCanvas();
+      renderInspector();
+      document.body.classList.add('inspector-open');
+      var first = ui.insp.querySelector('input, textarea');
+      if (first) { first.focus(); first.select && first.select(); }
+    });
 
     ui.stage.addEventListener('dragover', function (e) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; });
     ui.stage.addEventListener('drop', function (e) {

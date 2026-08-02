@@ -35,9 +35,18 @@
 
   // XML 実体参照エスケープ
   function esc(s) {
-    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
-      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
-    });
+    // XML に置けない制御文字を先に落とす（1文字混ざるだけでSVG全体が描画不能になる）
+    return String(s == null ? '' : s)
+      .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+      .replace(/[&<>"']/g, function (c) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+      });
+  }
+
+  // 絵文字や結合文字を途中で切らないための分割
+  function chars(s) {
+    s = String(s == null ? '' : s);
+    return typeof Array.from === 'function' ? Array.from(s) : s.split('');
   }
 
   // 文字の概算幅（全角=fontSize, 半角=fontSize*0.55）
@@ -46,22 +55,21 @@
   }
 
   function textWidth(s, fs) {
-    var w = 0;
-    s = String(s == null ? '' : s);
-    for (var i = 0; i < s.length; i++) w += charW(s.charAt(i), fs);
+    var a = chars(s), w = 0;
+    for (var i = 0; i < a.length; i++) w += charW(a[i], fs);
     return w;
   }
 
   // 幅に収まらない長文を切り詰めて「…」を付ける
   function clip(s, width, fontSize) {
-    s = String(s == null ? '' : s);
+    var a = chars(s);
     if (width <= 0) return '';
-    if (textWidth(s, fontSize) <= width) return s;
+    if (textWidth(a.join(''), fontSize) <= width) return a.join('');
     var out = '', w = 0;
-    for (var i = 0; i < s.length; i++) {
-      var cw = charW(s.charAt(i), fontSize);
+    for (var i = 0; i < a.length; i++) {
+      var cw = charW(a[i], fontSize);
       if (w + cw + fontSize > width) break; // 「…」1文字分を確保
-      out += s.charAt(i);
+      out += a[i];
       w += cw;
     }
     return out + '…';
@@ -73,12 +81,15 @@
     var out = [];
     if (width <= 0) return out;
     for (var i = 0; i < src.length; i++) {
+      var a = chars(src[i]);
       var cur = '', w = 0;
-      for (var j = 0; j < src[i].length; j++) {
-        var ch = src[i].charAt(j), cw = charW(ch, fontSize);
-        if (w + cw > width && cur !== '') { out.push(cur); cur = ''; w = 0; }
-        cur += ch; w += cw;
-        if (maxLines && out.length >= maxLines) return out;
+      for (var j = 0; j < a.length; j++) {
+        var cw = charW(a[j], fontSize);
+        if (w + cw > width && cur !== '') {
+          out.push(cur); cur = ''; w = 0;
+          if (maxLines && out.length >= maxLines) return out;
+        }
+        cur += a[j]; w += cw;
       }
       out.push(cur);
       if (maxLines && out.length >= maxLines) return out;
@@ -142,9 +153,17 @@
     return (v === undefined || v === null || v === '') ? def : v;
   }
 
-  function pnum(n, key, def) {
+  // 数値 props。壊れた値・極端な値でも描画が破綻しないよう必ず範囲に収める
+  function pnum(n, key, def, min, max) {
     var v = parseFloat(pv(n, key, def));
-    return isNaN(v) ? def : v;
+    if (isNaN(v) || !isFinite(v)) return def;
+    if (min !== undefined) v = Math.max(min, v);
+    if (max !== undefined) v = Math.min(max, v);
+    return v;
+  }
+
+  function pint(n, key, def, min, max) {
+    return Math.round(pnum(n, key, def, min, max));
   }
 
   function pbool(n, key) {
@@ -152,16 +171,22 @@
     return v === true || v === 'true' || v === 1;
   }
 
-  // textarea 型 props: 改行で分割し空行を除去
+  // textarea 型 props: 改行で分割し空行を除去。中身が空ならデフォルトに戻す
   function plines(n, key, def) {
-    return String(pv(n, key, def)).split('\n')
-      .map(function (s) { return s.replace(/^\s+|\s+$/g, ''); })
-      .filter(function (s) { return s !== ''; });
+    function split(v) {
+      return String(v).split('\n')
+        .map(function (s) { return s.replace(/^\s+|\s+$/g, ''); })
+        .filter(function (s) { return s !== ''; });
+    }
+    var out = split(pv(n, key, def));
+    return out.length ? out : split(def);
   }
 
-  // id を SVG の id 属性に使える形へ
+  // id を SVG の id 属性に使える形へ（非ASCIIのidでも衝突しないよう連番を足す）
+  var idSeq = 0;
   function safeId(n, prefix) {
-    return prefix + String(n.id || 'x').replace(/[^A-Za-z0-9_-]/g, '');
+    var base = String(n && n.id || '').replace(/[^A-Za-z0-9_-]/g, '');
+    return prefix + (base || 'x') + '-' + (++idSeq);
   }
 
   // ラベルを「…」で囲む（空なら空文字）
@@ -235,7 +260,7 @@
         s += ln(cx - 4, cy - 4, cx + 4, cy + 4, P.textMuted, 1.5, ' stroke-linecap="round"');
         s += ln(cx - 4, cy + 4, cx + 4, cy - 4, P.textMuted, 1.5, ' stroke-linecap="round"');
         // 本文ダミー線と下部ボタン
-        var hasBtns = n.h >= 100;
+        var hasBtns = n.h >= 100 && n.w >= 180;   // 幅が足りないとボタンが枠外へ出るため描かない
         s += dummyLines(14, hh + 14, n.w - 28, n.h - (hasBtns ? 46 : 12));
         if (hasBtns) {
           var by = n.h - 34;
@@ -313,7 +338,7 @@
       ],
       draw: function (n) {
         var items = plines(n, 'items', 'タブ1\nタブ2\nタブ3');
-        var active = pnum(n, 'active', 0);
+        var active = pint(n, 'active', 0, 0, 99);
         var s = ln(0, n.h - 1, n.w, n.h - 1, P.stroke, 1);
         var x = 0;
         for (var i = 0; i < items.length; i++) {
@@ -330,7 +355,7 @@
       },
       describe: function (n) {
         var items = plines(n, 'items', 'タブ1\nタブ2\nタブ3');
-        var active = pnum(n, 'active', 0);
+        var active = pint(n, 'active', 0, 0, 99);
         var cur = items[active] || items[0] || '';
         return 'タブ: ' + items.join(' / ') + (cur ? ' (選択中: ' + cur + ')' : '');
       }
@@ -539,7 +564,7 @@
       ],
       draw: function (n) {
         var items = plines(n, 'items', '選択肢1\n選択肢2\n選択肢3');
-        var active = pnum(n, 'active', 0);
+        var active = pint(n, 'active', 0, 0, 99);
         var s = '', rowH = 24;
         for (var i = 0; i < items.length; i++) {
           var cy = 12 + i * rowH;
@@ -556,7 +581,7 @@
       },
       describe: function (n) {
         var items = plines(n, 'items', '選択肢1\n選択肢2\n選択肢3');
-        var active = pnum(n, 'active', 0);
+        var active = pint(n, 'active', 0, 0, 99);
         var cur = items[active] || '';
         return 'ラジオボタン' + q(n.label) + ' 選択肢: ' + items.join(' / ') +
           (cur ? ' (選択中: ' + cur + ')' : '');
@@ -709,7 +734,7 @@
         { key: 'size', label: '文字サイズ', type: 'number', min: 9, max: 32 }
       ],
       draw: function (n) {
-        var fs = pnum(n, 'size', 13);
+        var fs = pnum(n, 'size', 13, 8, 48);
         var lh = fs * 1.55;
         var maxLines = Math.max(1, Math.floor(n.h / lh));
         var lines = wrap(n.label || '本文テキスト', n.w, fs, maxLines);
@@ -774,7 +799,7 @@
       draw: function (n) {
         var cols = plines(n, 'columns', '列1\n列2\n列3');
         if (!cols.length) cols = ['列1'];
-        var rows = Math.max(1, Math.round(pnum(n, 'rows', 4)));
+        var rows = Math.max(1, Math.round(pint(n, 'rows', 4, 1, 60)));
         var headerH = 24, rowH = 22;
         var nRows = Math.max(0, Math.min(rows, Math.floor((n.h - headerH) / rowH)));
         var colW = n.w / cols.length;
@@ -798,7 +823,7 @@
       },
       describe: function (n) {
         var cols = plines(n, 'columns', '列1\n列2\n列3');
-        var rows = Math.max(1, Math.round(pnum(n, 'rows', 4)));
+        var rows = Math.max(1, Math.round(pint(n, 'rows', 4, 1, 60)));
         return 'テーブル' + q(n.label) + ' 列: ' + cols.join(' / ') + ' (' + rows + '行表示)';
       }
     },
@@ -948,14 +973,14 @@
         { key: 'percent', label: '進捗(%)', type: 'number', min: 0, max: 100 }
       ],
       draw: function (n) {
-        var pct = Math.max(0, Math.min(100, pnum(n, 'percent', 60)));
+        var pct = Math.max(0, Math.min(100, pnum(n, 'percent', 60, 0, 100)));
         var by = n.h / 2 - 4;
         var s = rc(0, by, n.w, 8, LIGHT, null, 4);
         if (pct > 0) s += rc(0, by, n.w * pct / 100, 8, P.fillAccent, null, 4);
         return s;
       },
       describe: function (n) {
-        var pct = Math.max(0, Math.min(100, pnum(n, 'percent', 60)));
+        var pct = Math.max(0, Math.min(100, pnum(n, 'percent', 60, 0, 100)));
         return '進捗バー' + q(n.label) + ' ' + pct + '%';
       }
     },
@@ -1055,7 +1080,7 @@
         { key: 'number', label: '番号', type: 'number', min: 1, max: 99 }
       ],
       draw: function (n) {
-        var num = Math.max(1, Math.round(pnum(n, 'number', 1)));
+        var num = pint(n, 'number', 1, 1, 99);
         var s = rc(0, 0, n.w, n.h, P.note, P.noteStroke, 10);
         var cy = n.h / 2;
         s += cir(18, cy, 12, P.noteStroke);
@@ -1068,7 +1093,7 @@
         return s;
       },
       describe: function (n) {
-        var num = Math.max(1, Math.round(pnum(n, 'number', 1)));
+        var num = pint(n, 'number', 1, 1, 99);
         return '注釈(番号' + num + ')' + (n.label ? ': ' + oneline(n.label) : '');
       }
     },

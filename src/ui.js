@@ -15,7 +15,6 @@ window.SB = window.SB || {};
         if (v === null || v === undefined || v === false) return;
         if (k === 'class') el.className = v;
         else if (k === 'text') el.textContent = v;
-        else if (k === 'html') el.innerHTML = v;
         else if (k === 'style') el.setAttribute('style', v);
         else if (k.slice(0, 2) === 'on' && typeof v === 'function') el.addEventListener(k.slice(2).toLowerCase(), v);
         else if (v === true) el.setAttribute(k, '');
@@ -116,9 +115,8 @@ window.SB = window.SB || {};
       input = SB.h('input', { type: o.type || 'text', placeholder: o.placeholder || '' });
       input.value = o.value || '';
     }
-    var ev = o.options || o.type === 'date' ? 'change' : 'input';
+    var ev = (o.options || o.type === 'date') ? 'change' : 'input';
     input.addEventListener(ev, function () { o.onChange(input.value); });
-    if (ev === 'input') input.addEventListener('change', function () { o.onChange(input.value); });
 
     return SB.h('label', { class: 'field' }, [
       o.label ? labelEl(o.label, o.required) : null,
@@ -127,21 +125,30 @@ window.SB = window.SB || {};
     ]);
   };
 
+  var groupSeq = 0;
+
   SB.chipsField = function (o) {
-    var wrap = SB.h('div', { class: 'chips' });
+    var gid = 'chips-' + (++groupSeq);
+    var wrap = SB.h('div', { class: 'chips', role: 'group', 'aria-labelledby': gid });
     o.options.forEach(function (opt) {
       var on = o.values.indexOf(opt) >= 0;
-      var b = SB.h('button', { class: 'chip' + (on ? ' is-on' : ''), type: 'button', text: opt });
+      var b = SB.h('button', {
+        class: 'chip' + (on ? ' is-on' : ''), type: 'button', text: opt,
+        'aria-pressed': on ? 'true' : 'false'
+      });
       b.addEventListener('click', function () {
         var i = o.values.indexOf(opt);
         if (i >= 0) o.values.splice(i, 1); else o.values.push(opt);
         b.classList.toggle('is-on');
+        b.setAttribute('aria-pressed', b.classList.contains('is-on') ? 'true' : 'false');
         o.onChange();
       });
       wrap.appendChild(b);
     });
+    var lab = o.label ? labelEl(o.label) : null;
+    if (lab) lab.id = gid;
     return SB.h('div', { class: 'field' }, [
-      o.label ? labelEl(o.label) : null,
+      lab,
       wrap,
       o.hint ? SB.h('span', { class: 'field-hint', text: o.hint }) : null
     ]);
@@ -173,17 +180,28 @@ window.SB = window.SB || {};
         box.appendChild(SB.h('div', { class: 'empty-state', text: o.empty || 'まだ項目がありません。' }));
       }
       o.values.forEach(function (v, i) {
-        var input = SB.h('input', { type: 'text', placeholder: o.placeholder || '' });
+        var input = SB.h('input', {
+          type: 'text', placeholder: o.placeholder || '',
+          'aria-label': (o.label || '項目') + ' ' + (i + 1)
+        });
         input.value = v;
         input.addEventListener('input', function () { o.values[i] = input.value; o.onChange(); });
+        var focusRow = function (idx) {
+          var inputs = box.querySelectorAll('input');
+          var t = inputs[Math.max(0, Math.min(idx, inputs.length - 1))];
+          if (t) t.focus();
+        };
+        var swap = function (a, b) {
+          var t = o.values[a]; o.values[a] = o.values[b]; o.values[b] = t;
+          o.onChange(); render(); focusRow(b);
+        };
         var row = SB.h('div', { class: 'line-row' }, [
           input,
-          SB.iconBtn('up', '上へ', function () {
-            if (i === 0) return;
-            var t = o.values[i - 1]; o.values[i - 1] = o.values[i]; o.values[i] = t;
-            o.onChange(); render();
-          }),
-          SB.iconBtn('trash', '削除', function () { o.values.splice(i, 1); o.onChange(); render(); }, 'btn-danger')
+          SB.iconBtn('up', '上へ', function () { if (i > 0) swap(i, i - 1); }),
+          SB.iconBtn('down', '下へ', function () { if (i < o.values.length - 1) swap(i, i + 1); }),
+          SB.iconBtn('trash', '削除', function () {
+            o.values.splice(i, 1); o.onChange(); render(); focusRow(i);
+          }, 'btn-danger')
         ]);
         box.appendChild(row);
       });
@@ -213,6 +231,17 @@ window.SB = window.SB || {};
     ].concat(Array.isArray(children) ? children : [children]));
   };
 
+  // カード全体を作り直さずに見出しだけ差し替える（入力中のフォーカスを失わないため）
+  SB.setItemTitle = function (card, children) {
+    var t = card && card.querySelector('.item-title');
+    if (!t) return;
+    SB.clear(t);
+    (Array.isArray(children) ? children : [children]).forEach(function (c) {
+      if (c === null || c === undefined || c === false) return;
+      t.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+    });
+  };
+
   SB.itemCard = function (o) {
     return SB.h('div', { class: 'item' }, [
       SB.h('div', { class: 'item-head' }, [
@@ -226,15 +255,32 @@ window.SB = window.SB || {};
 
   /* ---------- トースト ---------- */
 
-  SB.toast = function (msg, isError) {
+  function showToast(node, ms) {
     var stack = document.getElementById('toastStack');
-    var t = SB.h('div', { class: 'toast' + (isError ? ' is-err' : ''), text: msg });
-    stack.appendChild(t);
+    stack.appendChild(node);
     setTimeout(function () {
-      t.style.transition = 'opacity .2s ease';
-      t.style.opacity = '0';
-      setTimeout(function () { if (t.parentNode) t.parentNode.removeChild(t); }, 220);
-    }, isError ? 4200 : 2200);
+      node.style.transition = 'opacity .2s ease';
+      node.style.opacity = '0';
+      setTimeout(function () { if (node.parentNode) node.parentNode.removeChild(node); }, 220);
+    }, ms);
+  }
+
+  SB.toast = function (msg, isError) {
+    showToast(SB.h('div', { class: 'toast' + (isError ? ' is-err' : ''), text: msg }), isError ? 4200 : 2200);
+  };
+
+  // 取り消しなどの操作を添えたトースト
+  SB.toastAction = function (msg, actionLabel, onAction) {
+    var t = SB.h('div', { class: 'toast has-action' });
+    t.appendChild(SB.h('span', { text: msg }));
+    t.appendChild(SB.h('button', {
+      class: 'toast-btn', type: 'button', text: actionLabel,
+      onclick: function () {
+        if (t.parentNode) t.parentNode.removeChild(t);
+        onAction();
+      }
+    }));
+    showToast(t, 8000);
   };
 
   /* ---------- モーダル ---------- */
@@ -255,50 +301,76 @@ window.SB = window.SB || {};
     });
   };
 
+  var lastFocus = null;
+
+  SB.isModalOpen = function () { return !!modalRoot && !modalRoot.hidden; };
+
   SB.openModal = function (o) {
+    lastFocus = document.activeElement;
     modalTitle.textContent = o.title || '';
     SB.clear(modalBody);
     SB.clear(modalFoot);
     (Array.isArray(o.body) ? o.body : [o.body]).forEach(function (n) { if (n) modalBody.appendChild(n); });
     (o.footer || []).forEach(function (n) { if (n) modalFoot.appendChild(n); });
     modalRoot.hidden = false;
+    var target = modalFoot.querySelector('.btn-primary') || modalFoot.querySelector('button') ||
+                 modalBody.querySelector('button, input, textarea, select');
+    if (target && target.focus) target.focus();
   };
 
-  SB.closeModal = function () { modalRoot.hidden = true; };
+  SB.closeModal = function () {
+    if (!modalRoot || modalRoot.hidden) return;
+    modalRoot.hidden = true;
+    if (lastFocus && lastFocus.focus && document.contains(lastFocus)) {
+      try { lastFocus.focus(); } catch (e) {}
+    }
+    lastFocus = null;
+  };
 
   SB.confirm = function (message, onYes, yesLabel) {
+    var cancel = SB.btn('キャンセル', SB.closeModal, 'btn');
     SB.openModal({
       title: '確認',
       body: SB.h('div', { style: 'padding:22px 24px;font-size:13.5px;line-height:1.8', text: message }),
       footer: [
         SB.h('div', { class: 'spacer' }),
-        SB.btn('キャンセル', SB.closeModal, 'btn'),
+        cancel,
         SB.btn(yesLabel || '実行する', function () { SB.closeModal(); onYes(); }, 'btn btn-primary')
       ]
     });
+    // Enter 連打で消してしまわないよう、初期フォーカスはキャンセル側に置く
+    cancel.focus();
   };
 
   /* ---------- クリップボード / ダウンロード ---------- */
 
+  /* クリックと同じ処理の中で execCommand を試す。
+     navigator.clipboard の失敗を待ってから実行すると、
+     Safari などでは「ユーザー操作の直後」ではなくなり弾かれるため。 */
   SB.copyText = function (text) {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      navigator.clipboard.writeText(text).then(function () {
-        SB.toast('クリップボードにコピーしました');
-      }, function () { fallback(); });
-    } else fallback();
-
-    function fallback() {
-      var ta = SB.h('textarea', { style: 'position:fixed;opacity:0;top:0;left:0' });
+    var done = false;
+    try {
+      var ta = SB.h('textarea', {
+        readonly: true,
+        style: 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0;pointer-events:none'
+      });
       ta.value = text;
       document.body.appendChild(ta);
       ta.select();
-      try {
-        document.execCommand('copy');
-        SB.toast('クリップボードにコピーしました');
-      } catch (e) {
-        SB.toast('コピーできませんでした。手動で選択してください', true);
-      }
+      ta.setSelectionRange(0, text.length);
+      done = document.execCommand('copy');
       document.body.removeChild(ta);
+    } catch (e) { done = false; }
+
+    if (done) { SB.toast('クリップボードにコピーしました'); return; }
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(
+        function () { SB.toast('クリップボードにコピーしました'); },
+        function () { SB.toast('コピーできませんでした。下の本文を選択してコピーしてください', true); }
+      );
+    } else {
+      SB.toast('コピーできませんでした。下の本文を選択してコピーしてください', true);
     }
   };
 

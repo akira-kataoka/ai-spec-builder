@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>AI指示書ビルダー テスト</title>
+<link rel="stylesheet" href="../assets/style.css">
+<style>
+  body { padding: 0; }
+  #results { font-family: var(--mono); font-size: 12.5px; line-height: 1.7; padding: 16px 20px; white-space: pre-wrap; }
+  .app { height: 60vh; }
+</style>
+</head>
+<body>
+
+<!-- index.html と同じ骨格（アプリはこの DOM に対して起動する） -->
+<div class="app">
+  <aside class="nav" id="nav">
+    <div class="nav-head">
+      <div class="progress"><div class="progress-bar"><i id="progressFill"></i></div><span id="progressLabel">0%</span></div>
+    </div>
+    <nav class="nav-list" id="navList"></nav>
+    <div class="nav-foot">
+      <button class="btn btn-ghost btn-block" id="btnNew" type="button">新規作成</button>
+      <div class="autosave" id="autosave"></div>
+    </div>
+  </aside>
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title"><h1 id="viewTitle"></h1><p id="viewHint"></p></div>
+      <div class="topbar-actions">
+        <button class="btn btn-ghost" id="btnImport" type="button">読み込み</button>
+        <button class="btn btn-ghost" id="btnExport" type="button">保存</button>
+        <button class="btn btn-ghost" id="btnTheme" type="button">テーマ</button>
+        <button class="btn btn-primary" id="btnOutput" type="button">出力</button>
+      </div>
+    </header>
+    <div class="workspace" id="workspace"></div>
+  </main>
+</div>
+
+<input type="file" id="fileInput" hidden>
+
+<div class="modal-root" id="modalRoot" hidden>
+  <div class="modal-backdrop" data-close="1"></div>
+  <div class="modal-panel">
+    <header class="modal-head"><h2 id="modalTitle"></h2><button id="modalClose" type="button">x</button></header>
+    <div class="modal-body" id="modalBody"></div>
+    <footer class="modal-foot" id="modalFoot"></footer>
+  </div>
+</div>
+
+<div class="toast-stack" id="toastStack"></div>
+
+<pre id="results">実行中...</pre>
+
+<script src="../src/shapes.js"></script>
+<script src="../src/state.js"></script>
+<script src="../src/templates.js"></script>
+<script src="../src/ui.js"></script>
+<script src="../src/sections.js"></script>
+<script src="../src/screens.js"></script>
+<script src="../src/markdown.js"></script>
+<script src="../src/app.js"></script>
+<script src="tests.js"></script>
+</body>
+</html>

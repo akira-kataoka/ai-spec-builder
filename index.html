@@ -2,7 +2,10 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<!-- 外部への通信も外部リソースの読み込みも一切しないアプリなので、全部止めておく。
+     読み込んだJSONに悪意があっても、そこからスクリプトや通信が起きないようにするため。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'">
 <title>AI指示書ビルダー</title>
 <meta name="description" content="AIにシステム開発を依頼するための指示書を、フォームと画面設計エディタから簡単に作成できるツール。">
 <link rel="stylesheet" href="assets/style.css">
@@ -11,6 +14,8 @@
 <body>
 
 <div class="app">
+
+  <div class="nav-scrim" id="navScrim"></div>
 
   <aside class="nav" id="nav">
     <div class="nav-head">
@@ -39,18 +44,27 @@
 
   <main class="main">
     <header class="topbar">
+      <button class="btn btn-ghost icon-btn nav-toggle" id="btnNav" type="button" aria-label="メニュー" aria-expanded="false" aria-controls="nav">
+        <svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" stroke-linecap="round"/></svg>
+      </button>
       <div class="topbar-title">
         <h1 id="viewTitle">基本情報</h1>
         <p id="viewHint">AIが最初に読む前提情報です。</p>
       </div>
       <div class="topbar-actions">
-        <button class="btn btn-ghost" id="btnImport" type="button">読み込み</button>
-        <button class="btn btn-ghost" id="btnExport" type="button">保存(JSON)</button>
+        <button class="btn btn-ghost" id="btnImport" type="button" title="JSONを読み込む">
+          <svg viewBox="0 0 24 24"><path d="M12 16V5M7.5 9.5L12 5l4.5 4.5M5 19h14" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="btn-label">読み込み</span>
+        </button>
+        <button class="btn btn-ghost" id="btnExport" type="button" title="JSONとして保存">
+          <svg viewBox="0 0 24 24"><path d="M12 4v11M7.5 10.5L12 15l4.5-4.5M5 19h14" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <span class="btn-label">保存(JSON)</span>
+        </button>
         <button class="btn btn-ghost icon-btn" id="btnTheme" type="button" title="テーマ切替" aria-label="テーマ切替">
           <svg viewBox="0 0 24 24" class="ico-sun"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.6M12 18.9v2.6M2.5 12h2.6M18.9 12h2.6M5.2 5.2l1.9 1.9M16.9 16.9l1.9 1.9M18.8 5.2l-1.9 1.9M7.1 16.9l-1.9 1.9" stroke-linecap="round"/></svg>
           <svg viewBox="0 0 24 24" class="ico-moon"><path d="M20 14.2A8.4 8.4 0 0 1 9.8 4 8.4 8.4 0 1 0 20 14.2Z"/></svg>
         </button>
-        <button class="btn btn-primary" id="btnOutput" type="button">指示書を出力</button>
+        <button class="btn btn-primary" id="btnOutput" type="button"><span class="label-full">指示書を出力</span><span class="label-short">出力</span></button>
       </div>
     </header>
 
@@ -79,6 +93,7 @@
 
 <script src="src/shapes.js"></script>
 <script src="src/state.js"></script>
+<script src="src/templates.js"></script>
 <script src="src/ui.js"></script>
 <script src="src/sections.js"></script>
 <script src="src/screens.js"></script>

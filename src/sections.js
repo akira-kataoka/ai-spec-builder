@@ -39,9 +39,51 @@ window.SB = window.SB || {};
 
   /* ================= 基本情報 ================= */
 
+  // 白紙のときだけ出す「はじめかた」
+  function starterCard() {
+    var d = SB.doc;
+    if (SB.completion() > 0 || SB.nodeCount() > 0) return null;
+
+    var tpl = h('div', { class: 'chips' }, SB.TEMPLATES.map(function (t) {
+      return SB.h('button', {
+        class: 'chip', type: 'button', title: t.desc,
+        text: t.name,
+        onclick: function () {
+          SB.applyTemplate(t.id);
+          SB.toast(t.name + 'の雛形を入れました');
+          SB.go('basic');
+        }
+      });
+    }));
+
+    return SB.card('はじめかた', '白紙から書かなくて済むように、2つの入口があります。', [
+      h('div', { class: 'field' }, [
+        h('span', { class: 'field-label', text: '1. 作るものに近い雛形から始める' }),
+        h('span', { class: 'field-hint', text: '技術・非機能要件・進め方のよくある項目が最初から入ります。あとから自由に変えられます。' }),
+        tpl
+      ]),
+      h('div', { style: 'height:16px' }),
+      h('div', { class: 'field' }, [
+        h('span', { class: 'field-label', text: '2. 記入済みのサンプルを見る' }),
+        h('span', { class: 'field-hint', text: '「備品貸出管理ツール」を題材に、画面設計まで全部埋まった状態を読み込みます。出力例をすぐ確認できます。' }),
+        h('div', { class: 'row-actions' }, [
+          SB.btn('サンプルを読み込む', function () {
+            var run = function () {
+              SB.replaceDoc(SB.buildSampleDoc());
+              SB.go('output');
+              SB.toast('サンプルを読み込みました。左のメニューから各項目を見てください');
+            };
+            run();
+          }, 'btn btn-primary', 'eye')
+        ])
+      ])
+    ]);
+  }
+
   views.basic = function (root) {
     var b = SB.doc.basic;
     root.appendChild(sheet([
+      starterCard(),
       hintBox('AIに渡す指示書の土台です。プロジェクト名と一言説明だけでも入れておくと、以降の出力が具体的になります。'),
       SB.card('プロジェクトの概要', 'AIが最初に読む部分です。', [
         h('div', { class: 'grid grid-2' }, [
@@ -201,29 +243,61 @@ window.SB = window.SB || {};
     var list = SB.doc.features;
     var box = h('div', { class: 'repeat' });
 
+    // どの画面に関わる機能かを結びつける（指示書で機能と画面が対応づく）
+    function screenPicker(f) {
+      var screens = SB.doc.screens;
+      if (!screens.length) return null;
+      f.screens = f.screens || [];
+      var wrap = h('div', { class: 'chips' });
+      screens.forEach(function (sc) {
+        var on = f.screens.indexOf(sc.id) >= 0;
+        var b = h('button', {
+          class: 'chip' + (on ? ' is-on' : ''), type: 'button', text: sc.name || '無題',
+          'aria-pressed': on ? 'true' : 'false'
+        });
+        b.addEventListener('click', function () {
+          var i = f.screens.indexOf(sc.id);
+          if (i >= 0) f.screens.splice(i, 1); else f.screens.push(sc.id);
+          b.classList.toggle('is-on');
+          b.setAttribute('aria-pressed', b.classList.contains('is-on') ? 'true' : 'false');
+          t();
+        });
+        wrap.appendChild(b);
+      });
+      return h('div', { class: 'field' }, [
+        h('span', { class: 'field-label', text: '関連する画面' }),
+        h('span', { class: 'field-hint', text: 'この機能が現れる画面を選びます。指示書で機能と画面が対応づきます。' }),
+        wrap
+      ]);
+    }
+
     function render() {
       SB.clear(box);
       if (!list.length) {
         box.appendChild(h('div', { class: 'empty-state', text: '機能がまだありません。「機能を追加」から1件ずつ登録してください。' }));
       }
       list.forEach(function (f, i) {
-        box.appendChild(SB.itemCard({
-          index: i + 1,
-          titleNode: [
+        var card;
+        var titleOf = function () {
+          return [
             h('span', { text: f.name || '' }),
             f.name ? null : h('span', { class: 'muted', text: '(名称未設定)' }),
             h('span', { class: 'muted', text: '  ' + f.priority })
-          ],
+          ];
+        };
+        card = SB.itemCard({
+          index: i + 1,
+          titleNode: titleOf(),
           tools: itemTools(list, i, render),
           body: [
             h('div', { class: 'grid grid-3' }, [
               h('div', { style: 'grid-column:span 2' }, SB.field({
                 label: '機能名', value: f.name, placeholder: '例: 備品の貸出申請',
-                onChange: function (v) { f.name = v; t(); }
+                onChange: function (v) { f.name = v; t(); SB.setItemTitle(card, titleOf()); }
               })),
               SB.field({
                 label: '優先度', value: f.priority, options: ['必須', '推奨', '任意', '将来対応'],
-                onChange: function (v) { f.priority = v; t(); render(); }
+                onChange: function (v) { f.priority = v; t(); SB.setItemTitle(card, titleOf()); }
               })
             ]),
             SB.field({
@@ -241,9 +315,11 @@ window.SB = window.SB || {};
             SB.field({
               label: '補足', value: f.notes, placeholder: '例: 既存の申請フォームと同じ項目順にする',
               onChange: function (v) { f.notes = v; t(); }
-            })
+            }),
+            screenPicker(f)
           ]
-        }));
+        });
+        box.appendChild(card);
       });
       box.appendChild(h('div', { class: 'row-actions' }, [
         SB.btn('機能を追加', function () { list.push(SB.newFeature()); t(); render(); }, 'btn btn-primary', 'plus')
@@ -312,19 +388,23 @@ window.SB = window.SB || {};
         box.appendChild(h('div', { class: 'empty-state', text: 'データの入れ物（テーブル・エンティティ）を追加してください。' }));
       }
       list.forEach(function (e, i) {
-        box.appendChild(SB.itemCard({
-          index: i + 1,
-          titleNode: [
+        var card;
+        var titleOf = function () {
+          return [
             h('span', { text: e.name || '' }),
             e.name ? null : h('span', { class: 'muted', text: '(名称未設定)' }),
             h('span', { class: 'muted', text: '  ' + e.fields.length + '項目' })
-          ],
+          ];
+        };
+        card = SB.itemCard({
+          index: i + 1,
+          titleNode: titleOf(),
           tools: itemTools(list, i, render),
           body: [
             h('div', { class: 'grid grid-2' }, [
               SB.field({
                 label: '名前', value: e.name, placeholder: '例: 備品 / Equipment',
-                onChange: function (v) { e.name = v; t(); render(); }
+                onChange: function (v) { e.name = v; t(); SB.setItemTitle(card, titleOf()); }
               }),
               SB.field({
                 label: '説明', value: e.description, placeholder: '例: 貸出対象となる備品1件',
@@ -333,7 +413,8 @@ window.SB = window.SB || {};
             ]),
             fieldsEditor(e)
           ]
-        }));
+        });
+        box.appendChild(card);
       });
       box.appendChild(h('div', { class: 'row-actions' }, [
         SB.btn('データを追加', function () { list.push(SB.newEntity()); t(); render(); }, 'btn btn-primary', 'plus')
@@ -359,19 +440,23 @@ window.SB = window.SB || {};
         box.appendChild(h('div', { class: 'empty-state', text: 'エンドポイントは未定義です。AIに任せる場合は空のままで構いません。' }));
       }
       api.endpoints.forEach(function (ep, i) {
-        box.appendChild(SB.itemCard({
+        var card;
+        var titleOf = function () {
+          return [h('span', { class: 'mono', text: ep.method + ' ' + (ep.path || '/') })];
+        };
+        card = SB.itemCard({
           index: i + 1,
-          titleNode: [h('span', { class: 'mono', text: ep.method + ' ' + (ep.path || '/') })],
+          titleNode: titleOf(),
           tools: itemTools(api.endpoints, i, render),
           body: [
             h('div', { class: 'grid grid-3' }, [
               SB.field({
                 label: 'メソッド', value: ep.method, options: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
-                onChange: function (v) { ep.method = v; t(); render(); }
+                onChange: function (v) { ep.method = v; t(); SB.setItemTitle(card, titleOf()); }
               }),
               h('div', { style: 'grid-column:span 2' }, SB.field({
                 label: 'パス', value: ep.path, placeholder: '例: /api/rentals/:id',
-                onChange: function (v) { ep.path = v; t(); render(); }
+                onChange: function (v) { ep.path = v; t(); SB.setItemTitle(card, titleOf()); }
               }))
             ]),
             SB.field({
@@ -391,7 +476,8 @@ window.SB = window.SB || {};
               })
             ])
           ]
-        }));
+        });
+        box.appendChild(card);
       });
       box.appendChild(h('div', { class: 'row-actions' }, [
         SB.btn('エンドポイントを追加', function () { api.endpoints.push(SB.newEndpoint()); t(); render(); }, 'btn btn-primary', 'plus')
@@ -436,19 +522,23 @@ window.SB = window.SB || {};
         box.appendChild(h('div', { class: 'empty-state', text: '手順のある処理（申請から承認まで等）があれば追加してください。' }));
       }
       list.forEach(function (fw, i) {
-        box.appendChild(SB.itemCard({
-          index: i + 1,
-          titleNode: [
+        var card;
+        var titleOf = function () {
+          return [
             h('span', { text: fw.name || '' }),
             fw.name ? null : h('span', { class: 'muted', text: '(名称未設定)' }),
             h('span', { class: 'muted', text: '  ' + fw.steps.length + 'ステップ' })
-          ],
+          ];
+        };
+        card = SB.itemCard({
+          index: i + 1,
+          titleNode: titleOf(),
           tools: itemTools(list, i, render),
           body: [
             h('div', { class: 'grid grid-2' }, [
               SB.field({
                 label: 'フロー名', value: fw.name, placeholder: '例: 貸出申請から返却まで',
-                onChange: function (v) { fw.name = v; t(); render(); }
+                onChange: function (v) { fw.name = v; t(); SB.setItemTitle(card, titleOf()); }
               }),
               SB.field({
                 label: 'きっかけ', value: fw.trigger, placeholder: '例: 社員が申請ボタンを押したとき',
@@ -467,7 +557,8 @@ window.SB = window.SB || {};
               onChange: function (v) { fw.exceptions = v; t(); }
             })
           ]
-        }));
+        });
+        box.appendChild(card);
       });
       box.appendChild(h('div', { class: 'row-actions' }, [
         SB.btn('フローを追加', function () { list.push(SB.newFlow()); t(); render(); }, 'btn btn-primary', 'plus')
