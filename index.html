@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI指示書ビルダー</title>
+<meta name="description" content="AIにシステム開発を依頼するための指示書を、フォームと画面設計エディタから簡単に作成できるツール。">
+<link rel="stylesheet" href="assets/style.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232563eb'/%3E%3Cpath d='M9 11h14M9 16h14M9 21h9' stroke='%23fff' stroke-width='2.4' stroke-linecap='round'/%3E%3C/svg%3E">
+</head>
+<body>
+
+<div class="app">
+
+  <aside class="nav" id="nav">
+    <div class="nav-head">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 32 32"><rect width="32" height="32" rx="7"/><path d="M9 11h14M9 16h14M9 21h9" stroke="#fff" stroke-width="2.4" stroke-linecap="round" fill="none"/></svg>
+        </span>
+        <span class="brand-text">
+          <strong>AI指示書ビルダー</strong>
+          <small>Spec Builder for AI</small>
+        </span>
+      </div>
+      <div class="progress">
+        <div class="progress-bar"><i id="progressFill"></i></div>
+        <span id="progressLabel">0%</span>
+      </div>
+    </div>
+
+    <nav class="nav-list" id="navList"></nav>
+
+    <div class="nav-foot">
+      <button class="btn btn-ghost btn-block" id="btnNew" type="button">新規作成</button>
+      <div class="autosave" id="autosave">自動保存: 待機中</div>
+    </div>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <div class="topbar-title">
+        <h1 id="viewTitle">基本情報</h1>
+        <p id="viewHint">AIが最初に読む前提情報です。</p>
+      </div>
+      <div class="topbar-actions">
+        <button class="btn btn-ghost" id="btnImport" type="button">読み込み</button>
+        <button class="btn btn-ghost" id="btnExport" type="button">保存(JSON)</button>
+        <button class="btn btn-ghost icon-btn" id="btnTheme" type="button" title="テーマ切替" aria-label="テーマ切替">
+          <svg viewBox="0 0 24 24" class="ico-sun"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.6M12 18.9v2.6M2.5 12h2.6M18.9 12h2.6M5.2 5.2l1.9 1.9M16.9 16.9l1.9 1.9M18.8 5.2l-1.9 1.9M7.1 16.9l-1.9 1.9" stroke-linecap="round"/></svg>
+          <svg viewBox="0 0 24 24" class="ico-moon"><path d="M20 14.2A8.4 8.4 0 0 1 9.8 4 8.4 8.4 0 1 0 20 14.2Z"/></svg>
+        </button>
+        <button class="btn btn-primary" id="btnOutput" type="button">指示書を出力</button>
+      </div>
+    </header>
+
+    <div class="workspace" id="workspace"></div>
+  </main>
+
+</div>
+
+<input type="file" id="fileInput" accept="application/json,.json" hidden>
+
+<div class="modal-root" id="modalRoot" hidden>
+  <div class="modal-backdrop" data-close="1"></div>
+  <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <header class="modal-head">
+      <h2 id="modalTitle">指示書プレビュー</h2>
+      <button class="btn btn-ghost icon-btn" id="modalClose" type="button" aria-label="閉じる">
+        <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18" stroke-linecap="round"/></svg>
+      </button>
+    </header>
+    <div class="modal-body" id="modalBody"></div>
+    <footer class="modal-foot" id="modalFoot"></footer>
+  </div>
+</div>
+
+<div class="toast-stack" id="toastStack" aria-live="polite"></div>
+
+<script src="src/shapes.js"></script>
+<script src="src/state.js"></script>
+<script src="src/ui.js"></script>
+<script src="src/sections.js"></script>
+<script src="src/screens.js"></script>
+<script src="src/markdown.js"></script>
+<script src="src/app.js"></script>
+</body>
+</html>
