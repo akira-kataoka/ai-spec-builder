@@ -491,15 +491,17 @@ window.SB = window.SB || {};
     box.appendChild(h('span', { class: 'spacer' }));
     box.appendChild(SB.btn('SVG', function () { exportSvg(scr()); }, 'btn btn-sm', 'download'));
     box.appendChild(SB.btn('PNG', function () { exportPng(scr()); }, 'btn btn-sm', 'image'));
-    box.appendChild(SB.btn('画面を削除', function () {
-      SB.confirm('画面「' + (scr().name || '無題') + '」を削除します。よろしいですか。', function () {
-        screens().splice(current, 1);
-        current = Math.max(0, current - 1);
-        selection = [];
-        commit();
-        renderBar();
-      }, '削除する');
-    }, 'btn btn-sm btn-danger'));
+  }
+
+  function deleteScreen() {
+    SB.confirm('画面「' + (scr().name || '無題') + '」を削除します。よろしいですか。', function () {
+      screens().splice(current, 1);
+      current = Math.max(0, current - 1);
+      selection = [];
+      if (!screens().length) screens().push(SB.newScreen('画面1'));
+      fitZoom();
+      commit();
+    }, '削除する');
   }
 
   function setZoom(z) {
@@ -646,7 +648,10 @@ window.SB = window.SB || {};
         ]),
         textField('この画面の説明（AIへの補足）', s.description,
           '例: ログイン後の最初の画面。件数が多いので検索とページングが要る。',
-          function (v) { s.description = v; }, true, 4)
+          function (v) { s.description = v; }, true, 4),
+        h('div', { class: 'row-actions' }, [
+          SB.btn('この画面を削除', deleteScreen, 'btn btn-sm btn-danger', 'trash')
+        ])
       ]));
       box.appendChild(h('div', { class: 'insp-empty', text: '部品を選ぶと、ここでラベルや注釈を編集できます。' }));
       return;
